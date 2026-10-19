@@ -23,7 +23,7 @@ dependencies = [
     "tqdm",
     "rerun-sdk>=0.23,<0.24",
     "torchaudio", ## Temp for AWS
-    "torch~=2.6.0", ## Temp for AWS
+    "torch>=2.7.0", ## fork: 2.6 cannot run sm_120 -- see [tool.uv.sources]
     "torchvision", ## Temp for AWS
     "trimesh",
     "matplotlib",
@@ -72,3 +72,30 @@ combine-as-imports = true
 detect-same-package = false
 order-by-type = false
 known-first-party = ["any4d", "uniception"]
+
+# ---------------------------------------------------------------- uv, not conda
+# This fork's feature/uv branch replaces the README's conda flow with uv, which is the
+# environment manager used across this lab. `main` is left byte-identical to upstream.
+#
+# TWO CHANGES FROM UPSTREAM, both forced by this machine:
+#
+# 1. torch 2.6 -> >=2.7. The GPU here is an RTX 5060 Ti, compute capability sm_120
+#    (Blackwell). torch 2.6.0+cu124 supports sm_50 through sm_90 and refuses sm_120
+#    outright: `CUDA capability sm_120 is not compatible with the current PyTorch
+#    installation`. Blackwell kernels first ship in the cu128 wheels, which begin at
+#    torch 2.7.0. Upstream's own comment on the pin is "## Temp for AWS", so it reads as
+#    a deployment artefact rather than a real API constraint -- but it IS a change from
+#    upstream, so if Any4D ever misbehaves here, suspect this first.
+#
+# 2. An explicit CUDA index. Upstream names no index, so a plain resolve takes whatever
+#    default wheel PyPI serves -- which can be a CPU build that makes the model appear to
+#    work while running orders of magnitude slow, with no error anywhere.
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

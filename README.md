@@ -1,3 +1,23 @@
+> **Fork note — `feature/uv` branch.**
+> This branch replaces the conda flow below with [uv](https://docs.astral.sh/uv/), and
+> raises the torch pin. `main` is left byte-identical to upstream.
+>
+> ```bash
+> uv sync                 # creates .venv and installs everything, incl. the git deps
+> uv run python scripts/demo_inference.py --video_images_folder_path <dir>
+> ```
+>
+> **Why torch moved from `~=2.6.0` to `>=2.7.0`:** the GPU here is an RTX 5060 Ti,
+> compute capability **sm_120** (Blackwell). torch 2.6.0+cu124 supports sm_50–sm_90 and
+> refuses sm_120 outright. Blackwell kernels first appear in the cu128 wheels, which
+> start at torch 2.7.0. Upstream's own comment on that pin is `## Temp for AWS`, so it
+> reads as a deployment artefact rather than an API constraint — but it is a real
+> deviation, so if anything misbehaves on this fork, suspect it first.
+>
+> `pyproject.toml` also names an explicit CUDA index. Without one, a plain resolve takes
+> whatever wheel PyPI serves by default, which can be a **CPU build** — the model then
+> appears to work while running orders of magnitude slower, with no error anywhere.
+
 <div align="center">
 <h1>Any4D: Unified Feed-Forward Metric <br>4D Reconstruction</h1>
 <a href="assets/Any4D.pdf"><img src="https://img.shields.io/badge/Paper-blue" alt="Paper"></a>
