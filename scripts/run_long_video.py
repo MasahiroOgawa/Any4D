@@ -8,7 +8,8 @@ size, normalisation and AMP follow scripts/demo_inference.py. Each clip goes to
 
     uv run python scripts/run_long_video.py --frames <dir of jpg> --window 8 --out <dir>
 
-Each npz: frames (n,) int32; depth (n,H,W) f16 (camera-frame z); scene_flow (n,3,H,W) f16;
+Each npz: frames (n,) int32; depth (n,H,W) f16 (camera-frame z); xyz (n,3,H,W) f16
+camera-frame points; scene_flow (n,3,H,W) f16;
 conf (n,H,W) f16; cam_trans (n,3) / cam_quats (n,4) f32, relative to the clip's first view.
 """
 
@@ -69,6 +70,7 @@ def main():
         np.savez_compressed(
             tmp, frames=np.asarray(idx, np.int32),
             depth=_stack(preds, "pts3d_cam", lambda t: t[..., 2]).astype(np.float16),
+            xyz=_stack(preds, "pts3d_cam", lambda t: t.permute(2, 0, 1)).astype(np.float16),
             scene_flow=_stack(preds, "scene_flow", lambda t: t.permute(2, 0, 1)).astype(np.float16),
             conf=_stack(preds, "conf", lambda t: t).astype(np.float16),
             cam_trans=_stack(preds, "cam_trans", lambda t: t),
