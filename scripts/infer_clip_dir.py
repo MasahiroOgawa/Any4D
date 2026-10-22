@@ -70,6 +70,22 @@ def _quat_to_rot(q: "torch.Tensor") -> "torch.Tensor":
     ])
 
 
+def _clip_pose0(pred, n_frames):
+    """World-to-camera of frame 0, or None if this clip carries no pose.
+
+    Used to re-gauge a whole clip onto its first camera, matching U4DR's convention.
+    """
+    pv = pred.get("pred1") if hasattr(pred, "get") else pred["pred1"]
+    if pv is None or "cam_quats" not in pv or "cam_trans" not in pv:
+        return None
+    R = _quat_to_rot(pv["cam_quats"].squeeze().float().cpu())
+    t = pv["cam_trans"].squeeze().float().cpu()
+    w2c = torch.eye(4)
+    w2c[:3, :3] = R.T
+    w2c[:3, 3] = -R.T @ t
+    return w2c
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--clips", required=True, help="dir holding clips/ and manifest.json")
@@ -132,6 +148,20 @@ def main() -> int:
                                     use_amp=high_level_config["trained_with_amp"])
         dst = out_root / cdir.name
         dst.mkdir(parents=True, exist_ok=True)
+
+        # GAUGE. Any4D expresses poses in its own world frame; U4DR's convention sets
+        # frame 0 to the identity so its camera frame IS the world frame
+        # (data/_common.py::normalize_poses_to_first, "the gauge convention of the
+        # theory document"). Measured without this: frame 0 came back as
+        # diag(-1, -1, 1) -- 180 deg about Z -- on every clip, so every pose was 180 deg
+        # from ground truth and pose AUC was EXACTLY 0.0000 at all four thresholds while
+        # the relative poses were fine (0.31 deg between adjacent frames). Exact zeros
+        # are the tell: a merely poor estimator scores small positives.
+        # Depth, F-score and Chamfer are unaffected -- reconstruction_fscore Umeyama-
+        # aligns before scoring, which absorbs a global rotation. Only pose does not.
+        w2c0 = _clip_pose0(pred, len(frames))
+        gauge = torch.linalg.inv(w2c0) if w2c0 is not None else None
+
         for fi in range(len(frames)):
             d = pred[f"pred{fi + 1}"]["depth_along_ray"].squeeze().float().cpu()
             if d.ndim == 3:                                 # (H,W,1) or (1,H,W)
@@ -158,6 +188,8 @@ def main() -> int:
                 ext = torch.eye(4)
                 ext[:3, :3] = R.T                         # world-to-camera
                 ext[:3, 3] = -R.T @ t
+                if gauge is not None:
+                    ext = ext @ gauge                     # frame 0 -> identity
                 entry["extrinsics"] = ext.numpy().astype(np.float32)
 
             if "ray_directions" in pv and ext is not None:
@@ -167,8 +199,13 @@ def main() -> int:
                 if rd.shape[-2:] != (gt_h, gt_w):
                     rd = F.interpolate(rd[None], size=(gt_h, gt_w), mode="nearest")[0]
                 rd = rd / rd.norm(dim=0, keepdim=True).clamp_min(1e-8)
-                world_d = (R @ rd.reshape(3, -1)).reshape(3, gt_h, gt_w)
-                origin = t.reshape(3, 1, 1).expand(3, gt_h, gt_w)
+                # Rotate by the GAUGED camera-to-world, not the raw R/t: `ext` above was
+                # re-anchored onto frame 0, and rays must live in that same world frame or
+                # the two keys of one cache entry describe different worlds. Umeyama in
+                # reconstruction_fscore absorbs the mismatch, so no metric would flag it.
+                c2w = torch.linalg.inv(ext)
+                world_d = (c2w[:3, :3] @ rd.reshape(3, -1)).reshape(3, gt_h, gt_w)
+                origin = c2w[:3, 3].reshape(3, 1, 1).expand(3, gt_h, gt_w)
                 entry["ray"] = torch.cat([origin, world_d], 0).numpy().astype(np.float32)
 
             np.savez(dst / f"{fi:02d}.npz", **entry)
@@ -177,8 +214,11 @@ def main() -> int:
             print(f"[any4d] {ci + 1}/{len(clip_dirs)} clips", flush=True)
 
     print(f"[any4d] wrote {written} depth maps for {len(clip_dirs)} clips -> {out_root}")
-    print(f"[any4d] the dump's manifest lists {len(manifest.get('clips', []))} clips; a "
-          f"mismatch means the comparison would score missing clips as invalid")
+    # dump_eval_clips.py writes manifest.json as a LIST of per-clip entries, not a dict
+    # with a "clips" key. The dict form never existed; this line ran only after every
+    # prediction was already on disk, so it crashed the run after doing all the work.
+    print(f"[any4d] the dump's manifest lists {len(manifest)} clips; a mismatch means "
+          f"the comparison would score missing clips as invalid")
     return 0
 
 
